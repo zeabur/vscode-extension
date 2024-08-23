@@ -1,14 +1,16 @@
 {
   "name": "zeabur-vscode",
-  "displayName": "zeabur-vscode",
-  "description": "",
-  "version": "0.0.1",
+  "displayName": "Zeabur",
+  "description": "Deploy your current workspace to Zeabur with a single click.",
+  "version": "0.0.2",
   "engines": {
     "vscode": "^1.91.0"
   },
   "categories": [
     "Other"
   ],
+  "publisher": "zeabur",
+  "icon": "images/zeabur.png",
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
