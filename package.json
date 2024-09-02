@@ -2,7 +2,7 @@
   "name": "zeabur-vscode",
   "displayName": "Zeabur",
   "description": "Deploy your current workspace to Zeabur with a single click.",
-  "version": "0.0.2",
+  "version": "0.0.4",
   "engines": {
     "vscode": "^1.91.0"
   },
@@ -18,6 +18,14 @@
       {
         "command": "zeabur-vscode.deploy",
         "title": "Deploy to Zeabur"
+      },
+      {
+        "command": "zeabur-vscode.openDashboard",
+        "title": "Open Zeabur Dashboard"
+      },
+      {
+        "command": "zeabur-vscode.openWebsite",
+        "title": "Open Deployed Website"
       }
     ],
     "viewsContainers": {
@@ -25,7 +33,7 @@
         {
           "id": "zeabur-sidebar",
           "title": "Zeabur",
-          "icon": "media/zeabur-icon.svg"
+          "icon": "images/zeabur.svg"
         }
       ]
     },
@@ -41,6 +49,14 @@
       {
         "view": "zeabur-deploy",
         "contents": "Deploy your project to Zeabur.\n[Deploy](command:zeabur-vscode.deploy)"
+      },
+      {
+        "view": "zeabur-deploy",
+        "contents": "Open your deployed website.\n[Open Website](command:zeabur-vscode.openWebsite)"
+      },
+      {
+        "view": "zeabur-deploy",
+        "contents": "Open Zeabur dashboard.\n[Open Dashboard](command:zeabur-vscode.openDashboard)"
       }
     ]
   },

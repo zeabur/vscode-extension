@@ -4,6 +4,8 @@ import fs from 'fs';
 import archiver from 'archiver';
 
 export function activate(context: vscode.ExtensionContext) {
+
+	// deploy
 	const disposable = vscode.commands.registerCommand('zeabur-vscode.deploy', async () => {
 		const workspaceFolders = vscode.workspace.workspaceFolders;
 
@@ -16,14 +18,17 @@ export function activate(context: vscode.ExtensionContext) {
 		const outputPath = path.join(workspacePath, 'project.zip');
 
 		try {
-			await compressDirectory(workspacePath, outputPath);
-			const zipContent = await fs.promises.readFile(outputPath);
-			const projectName = path.basename(workspacePath);
-			const result = await deployToZeabur(zipContent, projectName, workspacePath);
-			vscode.window.showInformationMessage(`Project deployed successfully! Domain: ${result.domain}`);
-
-			// Open the project dashboard in the browser
-			vscode.env.openExternal(vscode.Uri.parse(`https://dash.zeabur.com/projects/${result.projectID}`));
+			vscode.window.withProgress({
+				location: vscode.ProgressLocation.Notification,
+				title: 'Deploying project ...',
+				cancellable: false
+			}, async () => {
+				await compressDirectory(workspacePath, outputPath);
+				const zipContent = await fs.promises.readFile(outputPath);
+				const projectName = path.basename(workspacePath);
+				const result = await deployToZeabur(zipContent, projectName, workspacePath);
+				vscode.env.openExternal(vscode.Uri.parse(`https://dash.zeabur.com/projects/${result.projectID}`));
+			});
 		} catch (err: any) {
 			vscode.window.showErrorMessage(`Error: ${err.message}`);
 		} finally {
@@ -31,8 +36,56 @@ export function activate(context: vscode.ExtensionContext) {
 			fs.unlinkSync(outputPath);
 		}
 	});
-
 	context.subscriptions.push(disposable);
+
+	// open dashboard
+	const openDashboard = vscode.commands.registerCommand('zeabur-vscode.openDashboard', async () => {
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+
+		if (!workspaceFolders || workspaceFolders.length === 0) {
+			vscode.window.showErrorMessage('No workspace folder open');
+			return;
+		}
+
+		const workspacePath = workspaceFolders[0].uri.fsPath;
+		const configPath = path.join(workspacePath, '.zeabur', 'config.json');
+
+		if (!fs.existsSync(configPath)) {
+			vscode.window.showErrorMessage('No project deployed yet');
+			return;
+		}
+
+		const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+		vscode.env.openExternal(vscode.Uri.parse(`https://dash.zeabur.com/projects/${config.projectID}`));
+	});
+	context.subscriptions.push(openDashboard);
+
+	// open deployed website
+	const openWebsite = vscode.commands.registerCommand('zeabur-vscode.openWebsite', async () => {
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+
+		if (!workspaceFolders || workspaceFolders.length === 0) {
+			vscode.window.showErrorMessage('No workspace folder open');
+			return;
+		}
+
+		const workspacePath = workspaceFolders[0].uri.fsPath;
+		const configPath = path.join(workspacePath, '.zeabur', 'config.json');
+
+		if (!fs.existsSync(configPath)) {
+			vscode.window.showErrorMessage('No project deployed yet');
+			return;
+		}
+
+		try {
+			const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+			const domain = await getDomainOfService(config.projectID, config.serviceID);
+			vscode.env.openExternal(vscode.Uri.parse(`https://${domain}`));
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`Error: ${err.message}`);
+		}
+	});
+	context.subscriptions.push(openWebsite);
 
 	vscode.window.registerTreeDataProvider('zeabur-deploy', new ZeaburDeployProvider());
 }
@@ -46,7 +99,7 @@ function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
 		archive.on('error', err => reject(err));
 
 		archive.pipe(output);
-		archive.directory(sourceDir, false);
+		archive.glob('**/*', { cwd: sourceDir, ignore: ['**/node_modules/**'] });
 		archive.finalize();
 	});
 }
@@ -207,6 +260,65 @@ async function createDomain(serviceID: string, environmentID: string, serviceNam
 	}
 }
 
+async function getDomainOfService(projectID: string, serviceID: string): Promise<string> {
+	try {
+		const getEnvironmentsRes = await fetch(API_URL, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				query: `query GetEnvironments($projectID: ObjectID!) {
+				environments(projectID: $projectID) {
+					_id
+				}
+			}`,
+				variables: { projectID },
+			}),
+		});
+
+		const getEnvironmentsResponse = (await getEnvironmentsRes.json()) as { data: { environments: Array<{ _id: string }> } };
+
+		if (!getEnvironmentsResponse.data.environments || getEnvironmentsResponse.data.environments.length === 0) {
+			throw new Error('No environments found for the project');
+		}
+
+		const environmentID = getEnvironmentsResponse.data.environments[0]._id;
+
+		const res = await fetch(API_URL, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				query: `query GetDomain($serviceID: ObjectID!, $environmentID: ObjectID!) {
+				service(_id: $serviceID) {
+					domains(environmentID: $environmentID) {
+					  domain
+					}
+				}
+			}`,
+				variables: {
+					serviceID,
+					environmentID,
+				},
+			}),
+		});
+
+		const response = (await res.json()) as { data: { service: { domains: Array<{ domain: string }> } } };
+		const data = response.data;
+
+		if (!data.service.domains || data.service.domains.length === 0) {
+			throw new Error('No domain found for the service');
+		}
+
+		return data.service.domains[0].domain;
+	} catch (error) {
+		console.error('Error getting domain:', error);
+		throw error;
+	}
+}
+
 async function deploy(code: Blob, serviceName: string, workspacePath: string) {
 	try {
 		if (!code) {
@@ -228,12 +340,13 @@ async function deploy(code: Blob, serviceName: string, workspacePath: string) {
 			}
 		);
 
-		const domain = await createDomain(serviceID, environmentID, serviceName);
-
-		return {
-			projectID,
-			domain,
-		};
+		try {
+			const domain = await getDomainOfService(projectID, serviceID);
+			return { projectID, domain, };
+		} catch (error) {
+			const domain = await createDomain(serviceID, environmentID, serviceName);
+			return { projectID, domain, };
+		}
 	} catch (error) {
 		console.error(error);
 		throw error;
@@ -252,6 +365,29 @@ function generateRandomString() {
 		result += characters.charAt(Math.floor(Math.random() * charactersLength));
 	}
 	return result;
+}
+
+function getConfig() {
+	const workspaceFolders = vscode.workspace.workspaceFolders;
+
+	if (!workspaceFolders || workspaceFolders.length === 0) {
+		vscode.window.showErrorMessage('No workspace folder open');
+		return;
+	}
+
+	const workspacePath = workspaceFolders[0].uri.fsPath;
+	const configPath = path.join(workspacePath, '.zeabur', 'config.json');
+
+	if (!fs.existsSync(configPath)) {
+		vscode.window.showErrorMessage('No project deployed yet');
+		return;
+	}
+
+	try {
+		return JSON.parse(fs.readFileSync(configPath, 'utf8')) as { projectID: string, serviceID: string };
+	} catch (err: any) {
+		vscode.window.showErrorMessage(`Error: ${err.message}`);
+	}
 }
 
 export function deactivate() { }
