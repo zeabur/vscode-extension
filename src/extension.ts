@@ -15,20 +15,31 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 
 		const workspacePath = workspaceFolders[0].uri.fsPath;
-		const outputPath = path.join(workspacePath, 'project.zip');
+		const outputPath = path.join(workspacePath, '.zeabur/project.zip');
 
 		try {
-			vscode.window.withProgress({
+
+			await vscode.window.withProgress({
 				location: vscode.ProgressLocation.Notification,
-				title: 'Deploying project ...',
+				title: 'Compressing source code ...',
 				cancellable: false
 			}, async () => {
 				await compressDirectory(workspacePath, outputPath);
+			});
+
+			await vscode.window.withProgress({
+				location: vscode.ProgressLocation.Notification,
+				title: 'Uploading source code ...',
+				cancellable: false
+			}, async () => {
 				const zipContent = await fs.promises.readFile(outputPath);
 				const projectName = path.basename(workspacePath);
 				const result = await deployToZeabur(zipContent, projectName, workspacePath);
 				vscode.env.openExternal(vscode.Uri.parse(`https://dash.zeabur.com/projects/${result.projectID}`));
 			});
+
+			vscode.window.showInformationMessage(`Project uploaded successfully, you can now open the dashboard to see the deployment status`);
+
 		} catch (err: any) {
 			vscode.window.showErrorMessage(`Error: ${err.message}`);
 		} finally {
@@ -99,7 +110,7 @@ function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
 		archive.on('error', err => reject(err));
 
 		archive.pipe(output);
-		archive.glob('**/*', { cwd: sourceDir, ignore: ['**/node_modules/**'] });
+		archive.glob('**/*', { cwd: sourceDir, ignore: ['**/node_modules/**', '**/.git/**', '**/.zeabur/**'] });
 		archive.finalize();
 	});
 }
