@@ -9,6 +9,10 @@
   "categories": [
     "Other"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zeabur/vscode-extension"
+  },
   "publisher": "zeabur",
   "icon": "images/zeabur.png",
   "activationEvents": [],
