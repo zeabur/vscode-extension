@@ -75,25 +75,8 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(openDashboard);
 
 	// open deployed website
-	const openWebsite = vscode.commands.registerCommand('zeabur-vscode.openWebsite', async () => {
-		const workspaceFolders = vscode.workspace.workspaceFolders;
-
-		if (!workspaceFolders || workspaceFolders.length === 0) {
-			vscode.window.showErrorMessage('No workspace folder open');
-			return;
-		}
-
-		const workspacePath = workspaceFolders[0].uri.fsPath;
-		const configPath = path.join(workspacePath, '.zeabur', 'config.json');
-
-		if (!fs.existsSync(configPath)) {
-			vscode.window.showErrorMessage('No project deployed yet');
-			return;
-		}
-
+	const openWebsite = vscode.commands.registerCommand('zeabur-vscode.openWebsite', async (domain: string) => {
 		try {
-			const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-			const domain = await getDomainOfService(config.projectID, config.serviceID, context);
 			vscode.env.openExternal(vscode.Uri.parse(`https://${domain}`));
 		} catch (err: any) {
 			vscode.window.showErrorMessage(`Error: ${err.message}`);
@@ -167,23 +150,24 @@ async function deployToZeabur(zipContent: Buffer, projectName: string, workspace
 const API_URL = "https://gateway.zeabur.com/graphql";
 
 const getToken = (context: vscode.ExtensionContext) => {
-	const apiKey = context.globalState.get<string>('zeaburApiKey');
-	if (!apiKey) {
-		throw new Error('No API Key set');
-	}
-	return apiKey;
+	return context.globalState.get<string>('zeaburApiKey');
 };
 
 
 async function graphqlRequest(query: string, variables: any = {}, context: vscode.ExtensionContext): Promise<any> {
-	const token = await getToken(context);
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+	};
+
+	const token = getToken(context);
+	if (token) {
+		headers["Authorization"] = `Bearer ${token}`;
+	}
+
 	try {
 		const res = await fetch(API_URL, {
 			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"Authorization": `Bearer ${token}`
-			},
+			headers: headers,
 			body: JSON.stringify({ query, variables }),
 		});
 		return await res.json();
@@ -484,8 +468,16 @@ class ZeaburDeployProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 		const config = getConfig();
 		if (config && config.projectID && config.serviceID) {
-			items.push(getActionTreeItem('Open Deployed Website', 'openWebsite'));
 			items.push(getActionTreeItem('Open Zeabur Dashboard', 'openDashboard'));
+
+			try {
+				const domain = await getDomainOfService(config.projectID, config.serviceID, this.context);
+				if (domain) {
+					items.push(getActionTreeItem('Open Deployed Website', 'openWebsite', [domain]));
+				}
+			} catch (error) {
+				channel.appendLine(`Error fetching domain: ${error}`);
+			}
 		}
 
 		return items;
@@ -496,11 +488,12 @@ class ZeaburDeployProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 	}
 }
 
-const getActionTreeItem = (label: string, command: string) => {
+const getActionTreeItem = (label: string, command: string, args?: string[]) => {
 	const treeItem = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
 	treeItem.command = {
 		command: 'zeabur-vscode.' + command,
 		title: label,
+		arguments: args,
 	};
 	return treeItem;
 };
