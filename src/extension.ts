@@ -3,6 +3,8 @@ import * as vscode from 'vscode';
 import fs from 'fs';
 import archiver from 'archiver';
 
+const channel = vscode.window.createOutputChannel('zeabur');
+
 export function activate(context: vscode.ExtensionContext) {
 
 	// deploy
@@ -17,28 +19,29 @@ export function activate(context: vscode.ExtensionContext) {
 		const workspacePath = workspaceFolders[0].uri.fsPath;
 		const outputPath = path.join(workspacePath, '.zeabur/project.zip');
 
+		const outputDir = path.dirname(outputPath);
+		if (!fs.existsSync(outputDir)) {
+			fs.mkdirSync(outputDir, { recursive: true });
+		}
+
 		try {
-
 			await vscode.window.withProgress({
 				location: vscode.ProgressLocation.Notification,
-				title: 'Compressing source code ...',
+				title: 'Deploying project ...',
 				cancellable: false
 			}, async () => {
-				await compressDirectory(workspacePath, outputPath);
+				try {
+					await compressDirectory(workspacePath, outputPath);
+					const zipContent = await fs.promises.readFile(outputPath);
+					const projectName = path.basename(workspacePath);
+					const result = await deployToZeabur(zipContent, projectName, workspacePath, context);
+					vscode.window.showInformationMessage(`Project uploaded successfully, you can now open the dashboard to see the deployment status`);
+					vscode.env.openExternal(vscode.Uri.parse(`https://dash.zeabur.com/projects/${result.projectID}`));
+				} catch (error) {
+					channel.appendLine(`Error: ${error}`);
+					throw error;
+				}
 			});
-
-			await vscode.window.withProgress({
-				location: vscode.ProgressLocation.Notification,
-				title: 'Uploading source code ...',
-				cancellable: false
-			}, async () => {
-				const zipContent = await fs.promises.readFile(outputPath);
-				const projectName = path.basename(workspacePath);
-				const result = await deployToZeabur(zipContent, projectName, workspacePath);
-				vscode.env.openExternal(vscode.Uri.parse(`https://dash.zeabur.com/projects/${result.projectID}`));
-			});
-
-			vscode.window.showInformationMessage(`Project uploaded successfully, you can now open the dashboard to see the deployment status`);
 
 		} catch (err: any) {
 			vscode.window.showErrorMessage(`Error: ${err.message}`);
@@ -90,7 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 		try {
 			const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-			const domain = await getDomainOfService(config.projectID, config.serviceID);
+			const domain = await getDomainOfService(config.projectID, config.serviceID, context);
 			vscode.env.openExternal(vscode.Uri.parse(`https://${domain}`));
 		} catch (err: any) {
 			vscode.window.showErrorMessage(`Error: ${err.message}`);
@@ -98,7 +101,47 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	context.subscriptions.push(openWebsite);
 
-	vscode.window.registerTreeDataProvider('zeabur-deploy', new ZeaburDeployProvider());
+	const zeaburDeployProvider = new ZeaburDeployProvider(context);
+
+	// Watch for changes in the .zeabur/config.json file
+	const workspaceFolders = vscode.workspace.workspaceFolders;
+	if (workspaceFolders && workspaceFolders.length > 0) {
+		const workspacePath = workspaceFolders[0].uri.fsPath;
+		const zeaburDirPath = path.join(workspacePath, '.zeabur');
+		const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(zeaburDirPath, '**'));
+
+		watcher.onDidChange(() => zeaburDeployProvider.refresh());
+		watcher.onDidCreate(() => zeaburDeployProvider.refresh());
+		watcher.onDidDelete(() => zeaburDeployProvider.refresh());
+
+		context.subscriptions.push(watcher);
+	}
+
+	const setApiKeyCommand = vscode.commands.registerCommand('zeabur-vscode.setApiKey', async () => {
+		const apiKey = await vscode.window.showInputBox({
+			prompt: 'Enter your Zeabur API Key',
+			ignoreFocusOut: true,
+			password: true,
+		});
+
+		if (apiKey) {
+			context.globalState.update('zeaburApiKey', apiKey);
+			vscode.window.showInformationMessage('API Key saved successfully');
+			zeaburDeployProvider.refresh();
+		} else {
+			vscode.window.showErrorMessage('API Key is required');
+		}
+	});
+	context.subscriptions.push(setApiKeyCommand);
+
+	const logoutCommand = vscode.commands.registerCommand('zeabur-vscode.logout', async () => {
+		context.globalState.update('zeaburApiKey', undefined);
+		vscode.window.showInformationMessage('API Key removed successfully');
+		zeaburDeployProvider.refresh();
+	});
+	context.subscriptions.push(logoutCommand);
+
+	vscode.window.registerTreeDataProvider('zeabur-deploy', zeaburDeployProvider);
 }
 
 function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
@@ -115,26 +158,53 @@ function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
 	});
 }
 
-async function deployToZeabur(zipContent: Buffer, projectName: string, workspacePath: string) {
+async function deployToZeabur(zipContent: Buffer, projectName: string, workspacePath: string, context: vscode.ExtensionContext) {
 	const convertedName = convertTitle(projectName);
 	const blob = new Blob([zipContent], { type: 'application/zip' });
-	return await deploy(blob, convertedName, workspacePath);
+	return await deploy(blob, convertedName, workspacePath, context);
 }
 
 const API_URL = "https://gateway.zeabur.com/graphql";
 
-async function getOrCreateProjectAndService(workspacePath: string, serviceName: string): Promise<{ projectID: string, serviceID: string }> {
+const getToken = (context: vscode.ExtensionContext) => {
+	const apiKey = context.globalState.get<string>('zeaburApiKey');
+	if (!apiKey) {
+		throw new Error('No API Key set');
+	}
+	return apiKey;
+};
+
+
+async function graphqlRequest(query: string, variables: any = {}, context: vscode.ExtensionContext): Promise<any> {
+	const token = await getToken(context);
+	try {
+		const res = await fetch(API_URL, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"Authorization": `Bearer ${token}`
+			},
+			body: JSON.stringify({ query, variables }),
+		});
+		return await res.json();
+	} catch (error) {
+		console.error('GraphQL request error:', error);
+		throw error;
+	}
+}
+
+async function getOrCreateProjectAndService(workspacePath: string, serviceName: string, context: vscode.ExtensionContext) {
 	const configPath = path.join(workspacePath, '.zeabur', 'config.json');
 
 	if (fs.existsSync(configPath)) {
 		const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 		if (config.projectID && config.serviceID) {
-			return { projectID: config.projectID, serviceID: config.serviceID };
+			return { projectID: config.projectID, serviceID: config.serviceID, justCreated: false };
 		}
 	}
 
-	const projectID = await createTemporaryProject();
-	const serviceID = await createService(projectID, serviceName);
+	const projectID = await createTemporaryProject(context);
+	const serviceID = await createService(projectID, serviceName, context);
 
 	// Ensure .zeabur directory exists
 	const zeaburDir = path.join(workspacePath, '.zeabur');
@@ -145,221 +215,142 @@ async function getOrCreateProjectAndService(workspacePath: string, serviceName: 
 	// Write config
 	fs.writeFileSync(configPath, JSON.stringify({ projectID, serviceID }, null, 2));
 
-	return { projectID, serviceID };
+	return { projectID, serviceID, justCreated: true };
 }
 
-async function createTemporaryProject(): Promise<string> {
-	try {
-		const res = await fetch(API_URL, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				query: `mutation CreateTemporaryProject() {
-                createTemporaryProject() {
-                    _id
-                }
-            }`,
-			}),
-		});
-
-		const response = await res.json();
-		const { data } = response as { data: { createTemporaryProject: { _id: string } } };
-
-		return data.createTemporaryProject._id;
-	} catch (error) {
-		console.error('Error creating temporary project:', error);
-		throw error;
-	}
-}
-
-async function createService(
-	projectID: string,
-	serviceName: string
-): Promise<string> {
-	try {
-		const res = await fetch(API_URL, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				query: `mutation CreateService($projectID: ObjectID!, $template: ServiceTemplate!, $name: String!) {
-                createService(projectID: $projectID, template: $template, name: $name) {
-                    _id
-                }
-            }`,
-				variables: {
-					projectID,
-					template: "GIT",
-					name: serviceName,
-				},
-			}),
-		});
-
-		const response = await res.json();
-		const { data } = response as { data: { createService: { _id: string } } };
-
-		return data.createService._id;
-	} catch (error) {
-		console.error('Error creating service:', error);
-		throw error;
-	}
-}
-
-async function getEnvironment(projectID: string): Promise<string> {
-	try {
-		const res = await fetch(API_URL, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				query: `query GetEnvironment($projectID: ObjectID!) {
-                environments(projectID: $projectID) {
-                    _id
-                }
-            }`,
-				variables: {
-					projectID,
-				},
-			}),
-		});
-
-		const response = await res.json();
-		const { data } = response as { data: { environments: Array<{ _id: string }> } };
-
-		if (!data.environments || data.environments.length === 0) {
-			throw new Error('No environments found for the project');
+async function createTemporaryProject(context: vscode.ExtensionContext): Promise<string> {
+	const query = `mutation CreateTemporaryProject() {
+		createTemporaryProject() {
+			_id
 		}
-		return data.environments[0]._id;
-	} catch (error) {
-		console.error('Error getting environment:', error);
-		throw error;
-	}
+	}`;
+	const response = await graphqlRequest(query, {}, context);
+	const { data } = response as { data: { createTemporaryProject: { _id: string } } };
+	return data.createTemporaryProject._id;
 }
 
-async function createDomain(serviceID: string, environmentID: string, serviceName: string, domainName?: string): Promise<string> {
-	try {
-		const res = await fetch(API_URL, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				query: `mutation CreateDomain($serviceID: ObjectID!, $environmentID: ObjectID!, $domain: String!, $isGenerated: Boolean!) {
-                addDomain(serviceID: $serviceID, environmentID: $environmentID, domain: $domain, isGenerated: $isGenerated) {
-                    domain
-                }
-            }`,
-				variables: {
-					serviceID,
-					environmentID,
-					domain: domainName ?? `${serviceName + generateRandomString()}`,
-					isGenerated: true,
-				},
-			}),
-		});
-
-		const response = await res.json();
-		const { data } = response as { data: { addDomain: { domain: string } } };
-		return data.addDomain.domain;
-	} catch (error) {
-		console.error('Error creating domain:', error);
-		throw error;
-	}
-}
-
-async function getDomainOfService(projectID: string, serviceID: string): Promise<string> {
-	try {
-		const getEnvironmentsRes = await fetch(API_URL, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				query: `query GetEnvironments($projectID: ObjectID!) {
-				environments(projectID: $projectID) {
-					_id
-				}
-			}`,
-				variables: { projectID },
-			}),
-		});
-
-		const getEnvironmentsResponse = (await getEnvironmentsRes.json()) as { data: { environments: Array<{ _id: string }> } };
-
-		if (!getEnvironmentsResponse.data.environments || getEnvironmentsResponse.data.environments.length === 0) {
-			throw new Error('No environments found for the project');
+async function createService(projectID: string, serviceName: string, context: vscode.ExtensionContext): Promise<string> {
+	const query = `mutation CreateService($projectID: ObjectID!, $template: ServiceTemplate!, $name: String!) {
+		createService(projectID: $projectID, template: $template, name: $name) {
+			_id
 		}
-
-		const environmentID = getEnvironmentsResponse.data.environments[0]._id;
-
-		const res = await fetch(API_URL, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				query: `query GetDomain($serviceID: ObjectID!, $environmentID: ObjectID!) {
-				service(_id: $serviceID) {
-					domains(environmentID: $environmentID) {
-					  domain
-					}
-				}
-			}`,
-				variables: {
-					serviceID,
-					environmentID,
-				},
-			}),
-		});
-
-		const response = (await res.json()) as { data: { service: { domains: Array<{ domain: string }> } } };
-		const data = response.data;
-
-		if (!data.service.domains || data.service.domains.length === 0) {
-			throw new Error('No domain found for the service');
-		}
-
-		return data.service.domains[0].domain;
-	} catch (error) {
-		console.error('Error getting domain:', error);
-		throw error;
-	}
+	}`;
+	const variables = { projectID, template: "GIT", name: serviceName };
+	const response = await graphqlRequest(query, variables, context);
+	const { data } = response as { data: { createService: { _id: string } } };
+	return data.createService._id;
 }
 
-async function deploy(code: Blob, serviceName: string, workspacePath: string) {
+async function getEnvironment(projectID: string, context: vscode.ExtensionContext): Promise<string> {
+	const query = `query GetEnvironment($projectID: ObjectID!) {
+		environments(projectID: $projectID) {
+			_id
+		}
+	}`;
+	const variables = { projectID };
+	const response = await graphqlRequest(query, variables, context);
+	const { data } = response as { data: { environments: Array<{ _id: string }> } };
+
+	if (!data.environments || data.environments.length === 0) {
+		throw new Error('No environments found for the project');
+	}
+	return data.environments[0]._id;
+}
+
+async function createDomain(context: vscode.ExtensionContext, serviceID: string, environmentID: string, serviceName: string, domainName?: string): Promise<string> {
+	const query = `mutation CreateDomain($serviceID: ObjectID!, $environmentID: ObjectID!, $domain: String!, $isGenerated: Boolean!) {
+		addDomain(serviceID: $serviceID, environmentID: $environmentID, domain: $domain, isGenerated: $isGenerated) {
+			domain
+		}
+	}`;
+	const variables = {
+		serviceID,
+		environmentID,
+		domain: domainName ?? `${serviceName + generateRandomString()}`,
+		isGenerated: true,
+	};
+	const response = await graphqlRequest(query, variables, context);
+	const { data } = response as { data: { addDomain: { domain: string } } };
+	return data.addDomain.domain;
+}
+
+async function getDomainOfService(projectID: string, serviceID: string, context: vscode.ExtensionContext): Promise<string> {
+	const getEnvironmentsQuery = `query GetEnvironments($projectID: ObjectID!) {
+		environments(projectID: $projectID) {
+			_id
+		}
+	}`;
+	const getEnvironmentsVariables = { projectID };
+	const getEnvironmentsResponse = await graphqlRequest(getEnvironmentsQuery, getEnvironmentsVariables, context);
+	const { data: environmentsData } = getEnvironmentsResponse as { data: { environments: Array<{ _id: string }> } };
+
+	if (!getEnvironmentsResponse.data.environments || getEnvironmentsResponse.data.environments.length === 0) {
+		throw new Error('No environments found for the project');
+	}
+
+	const environmentID = getEnvironmentsResponse.data.environments[0]._id;
+
+	const getDomainQuery = `query GetDomain($serviceID: ObjectID!, $environmentID: ObjectID!) {
+		service(_id: $serviceID) {
+			domains(environmentID: $environmentID) {
+				domain
+			}
+		}
+	}`;
+	const getDomainVariables = { serviceID, environmentID };
+	const getDomainResponse = await graphqlRequest(getDomainQuery, getDomainVariables, context);
+	const { data: domainData } = getDomainResponse as { data: { service: { domains: Array<{ domain: string }> } } };
+
+	if (!domainData.service.domains || domainData.service.domains.length === 0) {
+		throw new Error('No domain found for the service');
+	}
+
+	return domainData.service.domains[0].domain;
+}
+
+async function deploy(code: Blob, serviceName: string, workspacePath: string, context: vscode.ExtensionContext) {
 	try {
 		if (!code) {
 			throw new Error("Code is required");
 		}
 
-		const { projectID, serviceID } = await getOrCreateProjectAndService(workspacePath, serviceName);
-		const environmentID = await getEnvironment(projectID);
+		const { projectID, serviceID, justCreated } = await getOrCreateProjectAndService(workspacePath, serviceName, context);
+
+		// environment is async created, so we need to wait a bit for it to be ready if the project is just created
+		if (justCreated) {
+			await new Promise(resolve => setTimeout(resolve, 3000));
+		}
+
+		const environmentID = await getEnvironment(projectID, context);
 
 		const formData = new FormData();
 		formData.append("environment", environmentID);
 		formData.append("code", code, "code.zip");
 
+		const token = getToken(context);
+		const headers: Record<string, string> = {};
+		if (token) {
+			headers["Authorization"] = `Bearer ${token}`;
+		}
+
 		await fetch(
 			`https://gateway.zeabur.com/projects/${projectID}/services/${serviceID}/deploy`,
 			{
 				method: "POST",
+				headers: headers,
 				body: formData,
 			}
 		);
 
 		try {
-			const domain = await getDomainOfService(projectID, serviceID);
+			const domain = await getDomainOfService(projectID, serviceID, context);
 			return { projectID, domain, };
 		} catch (error) {
-			const domain = await createDomain(serviceID, environmentID, serviceName);
+			const domain = await createDomain(context, serviceID, environmentID, serviceName);
 			return { projectID, domain, };
 		}
 	} catch (error) {
-		console.error(error);
+		channel.appendLine(`Error: ${error}`);
 		throw error;
 	}
 }
@@ -404,11 +395,112 @@ function getConfig() {
 export function deactivate() { }
 
 class ZeaburDeployProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+	private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | void>();
+	readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | void> = this._onDidChangeTreeData.event;
+
+	constructor(private context: vscode.ExtensionContext) { }
+
 	getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
 		return element;
 	}
 
-	getChildren(): Thenable<vscode.TreeItem[]> {
-		return Promise.resolve([]);
+	async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
+		if (!element) {
+			return this.getRootItems();
+		}
+
+		switch (element.label) {
+			case 'User':
+				return this.getLoginInformationItems();
+			case 'Project':
+				return this.getProjectInformationItems();
+			case 'Actions':
+				return this.getActionItems();
+			default:
+				return [];
+		}
+	}
+
+	private async getRootItems(): Promise<vscode.TreeItem[]> {
+		const items = [
+			new vscode.TreeItem('Actions', vscode.TreeItemCollapsibleState.Expanded),
+			new vscode.TreeItem('User', vscode.TreeItemCollapsibleState.Expanded),
+		];
+
+		const config = getConfig();
+		if (config && config.projectID && config.serviceID) {
+			items.push(new vscode.TreeItem('Project', vscode.TreeItemCollapsibleState.Expanded));
+		}
+
+		return items;
+	}
+
+	private async getLoginInformationItems(): Promise<vscode.TreeItem[]> {
+		const items: vscode.TreeItem[] = [];
+		const apiKey = this.context.globalState.get<string>('zeaburApiKey');
+
+		if (apiKey) {
+			try {
+				const query = `query {
+					me {
+						_id
+						username
+						email
+					}
+				}`;
+				const response = await graphqlRequest(query, {}, this.context);
+				const { data } = response as { data: { me: { _id: string, username: string, email: string } } };
+				items.push(new vscode.TreeItem(`Username: ${data.me.username}`, vscode.TreeItemCollapsibleState.None));
+				items.push(new vscode.TreeItem(`Email: ${data.me.email}`, vscode.TreeItemCollapsibleState.None));
+				items.push(getActionTreeItem('Logout', 'logout'));
+			} catch (error) {
+				channel.appendLine(`Error fetching user info: ${error}`);
+				items.push(new vscode.TreeItem('Error fetching user info', vscode.TreeItemCollapsibleState.None));
+			}
+		} else {
+			items.push(getActionTreeItem('Login to Zeabur', 'setApiKey'));
+		}
+
+		return items;
+	}
+
+	private async getProjectInformationItems(): Promise<vscode.TreeItem[]> {
+		const items: vscode.TreeItem[] = [];
+		const config = getConfig();
+
+		if (config && config.projectID && config.serviceID) {
+			items.push(new vscode.TreeItem(`Project: ${config.projectID}`, vscode.TreeItemCollapsibleState.None));
+			items.push(new vscode.TreeItem(`Service: ${config.serviceID}`, vscode.TreeItemCollapsibleState.None));
+		} else {
+			items.push(new vscode.TreeItem('No project deployed yet', vscode.TreeItemCollapsibleState.None));
+		}
+
+		return items;
+	}
+
+	private async getActionItems(): Promise<vscode.TreeItem[]> {
+		const items: vscode.TreeItem[] = [];
+		items.push(getActionTreeItem('Deploy', 'deploy'));
+
+		const config = getConfig();
+		if (config && config.projectID && config.serviceID) {
+			items.push(getActionTreeItem('Open Deployed Website', 'openWebsite'));
+			items.push(getActionTreeItem('Open Zeabur Dashboard', 'openDashboard'));
+		}
+
+		return items;
+	}
+
+	refresh(): void {
+		this._onDidChangeTreeData.fire();
 	}
 }
+
+const getActionTreeItem = (label: string, command: string) => {
+	const treeItem = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+	treeItem.command = {
+		command: 'zeabur-vscode.' + command,
+		title: label,
+	};
+	return treeItem;
+};

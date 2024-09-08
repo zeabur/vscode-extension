@@ -2,7 +2,7 @@
   "name": "zeabur-vscode",
   "displayName": "Zeabur",
   "description": "Deploy your current workspace to Zeabur with a single click.",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "engines": {
     "vscode": "^1.91.0"
   },
@@ -18,20 +18,6 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "zeabur-vscode.deploy",
-        "title": "Deploy to Zeabur"
-      },
-      {
-        "command": "zeabur-vscode.openDashboard",
-        "title": "Open Zeabur Dashboard"
-      },
-      {
-        "command": "zeabur-vscode.openWebsite",
-        "title": "Open Deployed Website"
-      }
-    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -45,24 +31,10 @@
       "zeabur-sidebar": [
         {
           "id": "zeabur-deploy",
-          "name": "Deploy"
+          "name": "Zeabur"
         }
       ]
-    },
-    "viewsWelcome": [
-      {
-        "view": "zeabur-deploy",
-        "contents": "Deploy your project to Zeabur.\n[Deploy](command:zeabur-vscode.deploy)"
-      },
-      {
-        "view": "zeabur-deploy",
-        "contents": "Open your deployed website.\n[Open Website](command:zeabur-vscode.openWebsite)"
-      },
-      {
-        "view": "zeabur-deploy",
-        "contents": "Open Zeabur dashboard.\n[Open Dashboard](command:zeabur-vscode.openDashboard)"
-      }
-    ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "pnpm run package",
