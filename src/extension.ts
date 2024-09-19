@@ -38,13 +38,14 @@ export function activate(context: vscode.ExtensionContext) {
 					vscode.window.showInformationMessage(`Project uploaded successfully, you can now open the dashboard to see the deployment status`);
 					vscode.env.openExternal(vscode.Uri.parse(`https://dash.zeabur.com/projects/${result.projectID}`));
 				} catch (error) {
-					channel.appendLine(`Error: ${error}`);
+					channel.appendLine(`${error}`);
+					vscode.window.showErrorMessage(`${error}`);
 					throw error;
 				}
 			});
 
 		} catch (err: any) {
-			vscode.window.showErrorMessage(`Error: ${err.message}`);
+			vscode.window.showErrorMessage(`${err}`);
 		} finally {
 			// Clean up the temporary zip file
 			fs.unlinkSync(outputPath);
@@ -136,7 +137,22 @@ function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
 		archive.on('error', err => reject(err));
 
 		archive.pipe(output);
-		archive.glob('**/*', { cwd: sourceDir, ignore: ['**/node_modules/**', '**/.git/**', '**/.zeabur/**'] });
+
+		// Read .gitignore file
+		const gitignorePath = path.join(sourceDir, '.gitignore');
+		let ignorePatterns: string[] = ['**/node_modules/**', '**/.git/**', '**/.zeabur/**', '**/venv/**'];
+		if (fs.existsSync(gitignorePath)) {
+			const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
+			ignorePatterns = ignorePatterns.concat(gitignoreContent.split('\n').filter(line => line.trim() && !line.startsWith('#')));
+		}
+
+		// Add files to archive
+		archive.glob('**/*', {
+			cwd: sourceDir,
+			ignore: ignorePatterns,
+			dot: true
+		});
+
 		archive.finalize();
 	});
 }
@@ -153,7 +169,6 @@ const getToken = (context: vscode.ExtensionContext) => {
 	return context.globalState.get<string>('zeaburApiKey');
 };
 
-
 async function graphqlRequest(query: string, variables: any = {}, context: vscode.ExtensionContext): Promise<any> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
@@ -165,12 +180,20 @@ async function graphqlRequest(query: string, variables: any = {}, context: vscod
 	}
 
 	try {
+		channel.appendLine(`GraphQL request: ${query} ${JSON.stringify(variables)}`);
 		const res = await fetch(API_URL, {
 			method: "POST",
 			headers: headers,
 			body: JSON.stringify({ query, variables }),
 		});
-		return await res.json();
+		const data = await res.json() as any;
+		channel.appendLine(`GraphQL response: ${JSON.stringify(data)}`);
+
+		if (data.errors && data.errors.length > 0 && data.errors[0].message === 'Permission denied') {
+			vscode.window.showErrorMessage('This project is claimed, please sign in to your Zeabur account.');
+		}
+
+		return data;
 	} catch (error) {
 		console.error('GraphQL request error:', error);
 		throw error;
@@ -203,13 +226,18 @@ async function getOrCreateProjectAndService(workspacePath: string, serviceName: 
 }
 
 async function createTemporaryProject(context: vscode.ExtensionContext): Promise<string> {
-	const query = `mutation CreateTemporaryProject() {
-		createTemporaryProject() {
+	const query = `mutation CreateTemporaryProject {
+		createTemporaryProject {
 			_id
 		}
 	}`;
+
 	const response = await graphqlRequest(query, {}, context);
-	const { data } = response as { data: { createTemporaryProject: { _id: string } } };
+	const { data } = response as { data?: { createTemporaryProject: { _id: string } } };
+	if (!data) {
+		throw new Error(response.errors[0].message);
+	}
+
 	return data.createTemporaryProject._id;
 }
 
@@ -221,7 +249,11 @@ async function createService(projectID: string, serviceName: string, context: vs
 	}`;
 	const variables = { projectID, template: "GIT", name: serviceName };
 	const response = await graphqlRequest(query, variables, context);
-	const { data } = response as { data: { createService: { _id: string } } };
+	const { data } = response as { data?: { createService: { _id: string } } };
+	if (!data) {
+		throw new Error(response.errors[0].message);
+	}
+
 	return data.createService._id;
 }
 
@@ -233,7 +265,10 @@ async function getEnvironment(projectID: string, context: vscode.ExtensionContex
 	}`;
 	const variables = { projectID };
 	const response = await graphqlRequest(query, variables, context);
-	const { data } = response as { data: { environments: Array<{ _id: string }> } };
+	const { data } = response as { data?: { environments: Array<{ _id: string }> } };
+	if (!data) {
+		throw new Error(response.errors[0].message);
+	}
 
 	if (!data.environments || data.environments.length === 0) {
 		throw new Error('No environments found for the project');
@@ -254,7 +289,11 @@ async function createDomain(context: vscode.ExtensionContext, serviceID: string,
 		isGenerated: true,
 	};
 	const response = await graphqlRequest(query, variables, context);
-	const { data } = response as { data: { addDomain: { domain: string } } };
+	const { data } = response as { data?: { addDomain: { domain: string } } };
+	if (!data) {
+		throw new Error(response.errors[0].message);
+	}
+
 	return data.addDomain.domain;
 }
 
@@ -266,7 +305,7 @@ async function getDomainOfService(projectID: string, serviceID: string, context:
 	}`;
 	const getEnvironmentsVariables = { projectID };
 	const getEnvironmentsResponse = await graphqlRequest(getEnvironmentsQuery, getEnvironmentsVariables, context);
-	const { data: environmentsData } = getEnvironmentsResponse as { data: { environments: Array<{ _id: string }> } };
+	const { data: environmentsData } = getEnvironmentsResponse as { data?: { environments: Array<{ _id: string }> } };
 
 	if (!getEnvironmentsResponse.data.environments || getEnvironmentsResponse.data.environments.length === 0) {
 		throw new Error('No environments found for the project');
@@ -283,7 +322,10 @@ async function getDomainOfService(projectID: string, serviceID: string, context:
 	}`;
 	const getDomainVariables = { serviceID, environmentID };
 	const getDomainResponse = await graphqlRequest(getDomainQuery, getDomainVariables, context);
-	const { data: domainData } = getDomainResponse as { data: { service: { domains: Array<{ domain: string }> } } };
+	const { data: domainData } = getDomainResponse as { data?: { service: { domains: Array<{ domain: string }> } } };
+	if (!domainData) {
+		throw new Error(getDomainResponse.errors[0].message);
+	}
 
 	if (!domainData.service.domains || domainData.service.domains.length === 0) {
 		throw new Error('No domain found for the service');
@@ -334,7 +376,8 @@ async function deploy(code: Blob, serviceName: string, workspacePath: string, co
 			return { projectID, domain, };
 		}
 	} catch (error) {
-		channel.appendLine(`Error: ${error}`);
+		channel.appendLine(`${error}`);
+		vscode.window.showErrorMessage(`${error}`);
 		throw error;
 	}
 }
@@ -365,7 +408,6 @@ function getConfig() {
 	const configPath = path.join(workspacePath, '.zeabur', 'config.json');
 
 	if (!fs.existsSync(configPath)) {
-		vscode.window.showErrorMessage('No project deployed yet');
 		return;
 	}
 
@@ -433,7 +475,11 @@ class ZeaburDeployProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 					}
 				}`;
 				const response = await graphqlRequest(query, {}, this.context);
-				const { data } = response as { data: { me: { _id: string, username: string, email: string } } };
+				const { data } = response as { data?: { me: { _id: string, username: string, email: string } } };
+				if (!data) {
+					throw new Error(response.errors[0].message);
+				}
+
 				items.push(new vscode.TreeItem(`Username: ${data.me.username}`, vscode.TreeItemCollapsibleState.None));
 				items.push(new vscode.TreeItem(`Email: ${data.me.email}`, vscode.TreeItemCollapsibleState.None));
 				items.push(getActionTreeItem('Logout', 'logout'));
