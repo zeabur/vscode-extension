@@ -482,11 +482,11 @@ class ZeaburDeployProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 				items.push(new vscode.TreeItem(`Username: ${data.me.username}`, vscode.TreeItemCollapsibleState.None));
 				items.push(new vscode.TreeItem(`Email: ${data.me.email}`, vscode.TreeItemCollapsibleState.None));
-				items.push(getActionTreeItem('Logout', 'logout'));
 			} catch (error) {
-				channel.appendLine(`Error fetching user info: ${error}`);
-				items.push(new vscode.TreeItem('Error fetching user info', vscode.TreeItemCollapsibleState.None));
+				this.context.globalState.update('zeaburApiKey', undefined);
+				this.refresh();
 			}
+			items.push(getActionTreeItem('Logout', 'logout'));
 		} else {
 			items.push(getActionTreeItem('Login to Zeabur', 'setApiKey'));
 		}
