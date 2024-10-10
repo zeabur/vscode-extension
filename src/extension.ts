@@ -143,7 +143,7 @@ function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
 		let ignorePatterns: string[] = ['**/node_modules/**', '**/.git/**', '**/.zeabur/**', '**/venv/**'];
 		if (fs.existsSync(gitignorePath)) {
 			const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
-			ignorePatterns = ignorePatterns.concat(gitignoreContent.split('\n').filter(line => line.trim() && !line.startsWith('#')));
+			ignorePatterns = ignorePatterns.concat(gitignoreContent.split('\n').filter(line => line.trim() && !line.startsWith('#') && !line.includes('!')));
 		}
 
 		// Add files to archive
