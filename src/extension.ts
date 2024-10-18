@@ -285,13 +285,13 @@ async function createDomain(context: vscode.ExtensionContext, serviceID: string,
 	const variables = {
 		serviceID,
 		environmentID,
-		domain: domainName ?? `${serviceName + generateRandomString()}`,
+		domain: serviceName,
 		isGenerated: true,
 	};
 	const response = await graphqlRequest(query, variables, context);
 	const { data } = response as { data?: { addDomain: { domain: string } } };
 	if (!data) {
-		throw new Error(response.errors[0].message);
+		throw new Error(`${response.errors[0].message}: ${serviceName}`);
 	}
 
 	return data.addDomain.domain;
@@ -382,8 +382,11 @@ async function deploy(code: Blob, serviceName: string, workspacePath: string, co
 	}
 }
 
-function convertTitle(title: string) {
-	return title.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+export function convertTitle(title: string) {
+	return title
+		.replace(/[^a-zA-Z0-9]/g, "-")
+		.replace(/^-+/, "")
+		.toLowerCase() + generateRandomString();
 }
 
 function generateRandomString() {
