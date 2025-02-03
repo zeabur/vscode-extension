@@ -94,9 +94,9 @@ async function deploy(code: Blob) {
 		const formData = new FormData();
 		formData.append("code", code, "code.zip");
 
-		const res = await fetch(`https://gateway.zeabur.com/upload`, { method: "POST", body: formData });
+		const res = await fetch(`https://api.zeabur.com/upload`, { method: "POST", body: formData });
 		const deployResponse = await res.json() as { id: string };
-		
+
 		return deployResponse.id;
 
 	} catch (error) {
