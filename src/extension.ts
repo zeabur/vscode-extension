@@ -68,7 +68,7 @@ function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
 
 		// Read .gitignore file
 		const gitignorePath = path.join(sourceDir, '.gitignore');
-		let ignorePatterns: string[] = ['**/node_modules/**', '**/.git/**', '**/.zeabur/**', '**/venv/**'];
+		let ignorePatterns: string[] = ['**/node_modules/**', '**/.git/**', '**/.zeabur/**', '**/venv/**', '**/env/**', '**/.*/**'];
 		if (fs.existsSync(gitignorePath)) {
 			const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
 			ignorePatterns = ignorePatterns.concat(gitignoreContent.split('\n').filter(line => line.trim() && !line.startsWith('#') && !line.includes('!')));
