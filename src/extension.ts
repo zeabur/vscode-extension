@@ -2,8 +2,23 @@ import path from 'path';
 import * as vscode from 'vscode';
 import fs from 'fs';
 import archiver from 'archiver';
+import crypto from 'crypto';
 
 const channel = vscode.window.createOutputChannel('zeabur');
+
+interface CreateUploadSessionResponse {
+	presign_url: string;
+	presign_header: Record<string, string>;
+	upload_id: string;
+}
+
+interface PrepareUploadResponse {
+	url: string;
+}
+
+interface ErrorResponse {
+	error: string;
+}
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -34,8 +49,9 @@ export function activate(context: vscode.ExtensionContext) {
 					await compressDirectory(workspacePath, outputPath);
 					const zipContent = await fs.promises.readFile(outputPath);
 					const blob = new Blob([zipContent], { type: 'application/zip' });
-					const uploadID = await deploy(blob);
-					vscode.env.openExternal(vscode.Uri.parse(`https://zeabur.com/uploads/${uploadID}`));
+
+					const redirectUrl = await deploy(blob);
+					vscode.env.openExternal(vscode.Uri.parse(redirectUrl));
 				} catch (error) {
 					channel.appendLine(`${error}`);
 					vscode.window.showErrorMessage(`${error}`);
@@ -85,19 +101,76 @@ function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
 	});
 }
 
+async function calculateSHA256(blob: Blob): Promise<string> {
+	const arrayBuffer = await blob.arrayBuffer();
+	const hash = crypto.createHash('sha256');
+	hash.update(Buffer.from(arrayBuffer));
+	return hash.digest('base64');
+}
+
 async function deploy(code: Blob) {
 	try {
 		if (!code) {
 			throw new Error("Code is required");
 		}
 
-		const formData = new FormData();
-		formData.append("code", code, "code.zip");
+		// Calculate content hash
+		const contentHash = await calculateSHA256(code);
+		const contentLength = code.size;
 
-		const res = await fetch(`https://api.zeabur.com/upload`, { method: "POST", body: formData });
-		const deployResponse = await res.json() as { id: string };
+		// Create upload session
+		const createSessionRes = await fetch('https://api.zeabur.com/v2/upload', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify({
+				content_hash: contentHash,
+				content_hash_algorithm: 'sha256',
+				content_length: contentLength
+			})
+		});
 
-		return deployResponse.id;
+		if (!createSessionRes.ok) {
+			const errorData = await createSessionRes.json() as ErrorResponse;
+			throw new Error(errorData.error || `Failed to create upload session: ${createSessionRes.statusText}`);
+		}
+
+		const { presign_url, presign_header, upload_id } = await createSessionRes.json() as CreateUploadSessionResponse;
+
+		// Upload file using presigned URL
+		const uploadRes = await fetch(presign_url, {
+			method: 'PUT',
+			headers: {
+				...presign_header,
+				'Content-Length': contentLength.toString()
+			},
+			body: code
+		});
+
+		if (!uploadRes.ok) {
+			const errorData = await uploadRes.json().catch(() => ({ error: uploadRes.statusText })) as ErrorResponse;
+			throw new Error(errorData.error || `Failed to upload file: ${uploadRes.statusText}`);
+		}
+
+		// Prepare upload for deployment
+		const prepareRes = await fetch(`https://api.zeabur.com/v2/upload/${upload_id}/prepare`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify({
+				upload_type: 'new_project'
+			})
+		});
+
+		if (!prepareRes.ok) {
+			const errorData = await prepareRes.json() as ErrorResponse;
+			throw new Error(errorData.error || `Failed to prepare upload: ${prepareRes.statusText}`);
+		}
+
+		const { url } = await prepareRes.json() as PrepareUploadResponse;
+		return url;
 
 	} catch (error) {
 		channel.appendLine(`${error}`);
