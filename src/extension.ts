@@ -23,7 +23,8 @@ interface ErrorResponse {
 export function activate(context: vscode.ExtensionContext) {
 
 	// deploy
-	const disposable = vscode.commands.registerCommand('zeabur-vscode.deploy', async () => {
+	const disposable = vscode.commands.registerCommand('zeabur-vscode.deploy', debounce(async () => {
+		console.log('[zeabur-vscode] Deploy command triggered');
 		const workspaceFolders = vscode.workspace.workspaceFolders;
 
 		if (!workspaceFolders || workspaceFolders.length === 0) {
@@ -65,7 +66,8 @@ export function activate(context: vscode.ExtensionContext) {
 			// Clean up the temporary zip file
 			fs.unlinkSync(outputPath);
 		}
-	});
+	}, 2000));
+
 	context.subscriptions.push(disposable);
 
 	const zeaburDeployProvider = new ZeaburDeployProvider(context);
@@ -211,3 +213,16 @@ const getActionTreeItem = (label: string, command: string, args?: string[]) => {
 	};
 	return treeItem;
 };
+
+function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
+	let timer: NodeJS.Timeout | null = null;
+	return function(this: any, ...args: any[]) {
+		if (timer) {
+			clearTimeout(timer);
+		}
+		timer = setTimeout(() => {
+			fn.apply(this, args);
+			timer = null;
+		}, delay);
+	} as T;
+}
