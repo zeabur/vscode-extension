@@ -20,11 +20,16 @@ interface ErrorResponse {
 	error: string;
 }
 
+let isDeploying = false;
+
 export function activate(context: vscode.ExtensionContext) {
 
 	// deploy
-	const disposable = vscode.commands.registerCommand('zeabur-vscode.deploy', debounce(async () => {
+	const disposable = vscode.commands.registerCommand('zeabur-vscode.deploy', async () => {
 		console.log('[zeabur-vscode] Deploy command triggered');
+		isDeploying = true;
+		zeaburDeployProvider.refresh();
+
 		const workspaceFolders = vscode.workspace.workspaceFolders;
 
 		if (!workspaceFolders || workspaceFolders.length === 0) {
@@ -65,8 +70,10 @@ export function activate(context: vscode.ExtensionContext) {
 		} finally {
 			// Clean up the temporary zip file
 			fs.unlinkSync(outputPath);
+			isDeploying = false;
+			zeaburDeployProvider.refresh();
 		}
-	}, 2000));
+	});
 
 	context.subscriptions.push(disposable);
 
@@ -189,6 +196,10 @@ class ZeaburDeployProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 	constructor(private context: vscode.ExtensionContext) { }
 
+	refresh(): void {
+		this._onDidChangeTreeData.fire();
+	}
+
 	getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
 		return element;
 	}
@@ -199,30 +210,21 @@ class ZeaburDeployProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 	private async getRootItems(): Promise<vscode.TreeItem[]> {
 		const items: vscode.TreeItem[] = [];
-		items.push(getActionTreeItem('Deploy', 'deploy'));
+		const label = isDeploying ? 'Deploying...' : 'Deploy';
+		items.push(getActionTreeItem(label, 'deploy', undefined, isDeploying));
 		return items;
 	}
 }
 
-const getActionTreeItem = (label: string, command: string, args?: string[]) => {
+const getActionTreeItem = (label: string, command: string, args?: string[], disabled = false) => {
 	const treeItem = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-	treeItem.command = {
-		command: 'zeabur-vscode.' + command,
-		title: label,
-		arguments: args,
-	};
+	treeItem.contextValue = 'deployAction';
+	if (!disabled) {
+		treeItem.command = {
+			command: 'zeabur-vscode.' + command,
+			title: label,
+			arguments: args,
+		};
+	}
 	return treeItem;
 };
-
-function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
-	let timer: NodeJS.Timeout | null = null;
-	return function(this: any, ...args: any[]) {
-		if (timer) {
-			clearTimeout(timer);
-		}
-		timer = setTimeout(() => {
-			fn.apply(this, args);
-			timer = null;
-		}, delay);
-	} as T;
-}
