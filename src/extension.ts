@@ -3,6 +3,8 @@ import * as vscode from 'vscode';
 import fs from 'fs';
 import archiver from 'archiver';
 import crypto from 'crypto';
+import ignore from 'ignore';
+import { readdir } from 'fs/promises';
 
 const channel = vscode.window.createOutputChannel('zeabur');
 
@@ -81,32 +83,53 @@ export function activate(context: vscode.ExtensionContext) {
 	vscode.window.registerTreeDataProvider('zeabur-deploy', zeaburDeployProvider);
 }
 
-function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const output = fs.createWriteStream(outPath);
-		const archive = archiver('zip', { zlib: { level: 9 } });
+async function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
+	const output = fs.createWriteStream(outPath);
+	const archive = archiver('zip', { zlib: { level: 9 } });
 
+	return new Promise(async (resolve, reject) => {
 		output.on('close', () => resolve());
 		archive.on('error', err => reject(err));
-
 		archive.pipe(output);
 
-		// Read .gitignore file
+		// Load .gitignore patterns
 		const gitignorePath = path.join(sourceDir, '.gitignore');
-		let ignorePatterns: string[] = ['**/node_modules/**', '**/.git/**', '**/.zeabur/**', '**/venv/**', '**/env/**', '**/.*/**'];
+		const ig = ignore().add([
+			'node_modules/',
+			'.git/',
+			'.zeabur/',
+			'venv/',
+			'env/',
+			'.*/',
+		]);
+
 		if (fs.existsSync(gitignorePath)) {
 			const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
-			ignorePatterns = ignorePatterns.concat(gitignoreContent.split('\n').filter(line => line.trim() && !line.startsWith('#') && !line.includes('!')));
+			ig.add(gitignoreContent);
 		}
 
-		// Add files to archive
-		archive.glob('**/*', {
-			cwd: sourceDir,
-			ignore: ignorePatterns,
-			dot: true
-		});
+		// Recursively add files manually
+		async function addFilesRecursively(dir: string, base = '') {
+			const entries = await readdir(dir, { withFileTypes: true });
 
-		archive.finalize();
+			for (const entry of entries) {
+				const fullPath = path.join(dir, entry.name);
+				const relativePath = path.join(base, entry.name);
+				const normalizedPath = relativePath.replace(/\\/g, '/');
+
+				if (ig.ignores(normalizedPath)) {continue;}
+
+				if (entry.isDirectory()) {
+					await addFilesRecursively(fullPath, normalizedPath);
+				} else {
+					console.log('[zeabur-vscode] Adding file:', normalizedPath);
+					archive.file(fullPath, { name: normalizedPath });
+				}
+			}
+		}
+
+		await addFilesRecursively(sourceDir);
+		await archive.finalize();
 	});
 }
 

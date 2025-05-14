@@ -14,6 +14,9 @@ importers:
       archiver:
         specifier: ^7.0.1
         version: 7.0.1
+      ignore:
+        specifier: ^7.0.4
+        version: 7.0.4
     devDependencies:
       '@types/mocha':
         specifier: ^10.0.7
@@ -877,6 +880,10 @@ packages:
 
   ignore@5.3.2:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
+    engines: {node: '>= 4'}
+
+  ignore@7.0.4:
+    resolution: {integrity: sha512-gJzzk+PQNznz8ysRrC0aOkBNVRBDtE1n53IqyqEf3PXrYwomFs5q4pGMizBMJF+ykh03insJ27hB8gSrD2Hn8A==}
     engines: {node: '>= 4'}
 
   immediate@3.0.6:
@@ -2569,6 +2576,8 @@ snapshots:
   ieee754@1.2.1: {}
 
   ignore@5.3.2: {}
+
+  ignore@7.0.4: {}
 
   immediate@3.0.6: {}
 
