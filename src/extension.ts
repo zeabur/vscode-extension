@@ -24,6 +24,36 @@ interface ErrorResponse {
 
 let isDeploying = false;
 
+function detectEditor(): string | null {
+	const execPath = process.execPath.toLowerCase();
+
+	if (execPath.includes('visual studio code')) {
+		return 'Visual Studio Code';
+	} else if (execPath.includes('vscode')) {
+		return 'Visual Studio Code';
+	} else if (execPath.includes('codium')) {
+		return 'VSCodium';
+	} else if (execPath.includes('cursor')) {
+		return 'Cursor';
+	} else if (execPath.includes('windsurf')) {
+		return 'Windsurf';
+	} else if (execPath.includes('trae')) {
+		return 'Trae';
+	} else if (execPath.includes('sublime')) {
+		return 'Sublime Text';
+	} else if (execPath.includes('atom')) {
+		return 'Atom';
+	} else if (execPath.includes('brackets')) {
+		return 'Brackets';
+	} else if (execPath.includes('theia')) {
+		return 'Theia';
+	} else if (execPath.includes('code')) {
+		return 'Visual Studio Code';
+	}
+
+	return null;
+}
+
 export function activate(context: vscode.ExtensionContext) {
 
 	// deploy
@@ -186,14 +216,24 @@ async function deploy(code: Blob) {
 		}
 
 		// Prepare upload for deployment
+		const editor = detectEditor();
+		const requestBody: any = {
+			upload_type: 'new_project',
+		};
+
+		if (editor) {
+			requestBody.metadata = {
+				uploaded_from: editor,
+			};
+			channel.appendLine(`[zeabur-vscode] Uploaded from ${editor}`);
+		}
+
 		const prepareRes = await fetch(`https://api.zeabur.com/v2/upload/${upload_id}/prepare`, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify({
-				upload_type: 'new_project'
-			})
+			body: JSON.stringify(requestBody)
 		});
 
 		if (!prepareRes.ok) {
