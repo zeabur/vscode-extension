@@ -88,7 +88,7 @@ export function activate(context: vscode.ExtensionContext) {
 					const zipContent = await fs.promises.readFile(outputPath);
 					const blob = new Blob([zipContent], { type: 'application/zip' });
 
-					const redirectUrl = await deploy(blob);
+					const redirectUrl = await deploy(blob, workspacePath);
 					vscode.env.openExternal(vscode.Uri.parse(redirectUrl));
 				} catch (error) {
 					channel.appendLine(`${error}`);
@@ -170,7 +170,7 @@ async function calculateSHA256(blob: Blob): Promise<string> {
 	return hash.digest('base64');
 }
 
-async function deploy(code: Blob) {
+async function deploy(code: Blob, workspacePath: string) {
 	try {
 		if (!code) {
 			throw new Error("Code is required");
@@ -221,11 +221,18 @@ async function deploy(code: Blob) {
 			upload_type: 'new_project',
 		};
 
-		if (editor) {
-			requestBody.metadata = {
-				uploaded_from: editor,
-			};
-			channel.appendLine(`[zeabur-vscode] Uploaded from ${editor}`);
+		if (editor || workspacePath) {
+			requestBody.metadata = {};
+			
+			if (editor) {
+				requestBody.metadata.uploaded_from = editor;
+				channel.appendLine(`[zeabur-vscode] Uploaded from ${editor}`);
+			}
+			
+			if (workspacePath) {
+				requestBody.metadata.workspace_path = workspacePath;
+				channel.appendLine(`[zeabur-vscode] Workspace path: ${workspacePath}`);
+			}
 		}
 
 		const prepareRes = await fetch(`https://api.zeabur.com/v2/upload/${upload_id}/prepare`, {
