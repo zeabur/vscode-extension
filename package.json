@@ -2,7 +2,7 @@
   "name": "zeabur-vscode",
   "displayName": "Zeabur",
   "description": "Deploy your current workspace to Zeabur with a single click.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "engines": {
     "vscode": "^1.91.0"
   },
