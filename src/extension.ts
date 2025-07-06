@@ -24,6 +24,36 @@ interface ErrorResponse {
 
 let isDeploying = false;
 
+function detectEditor(): string | null {
+	const execPath = process.execPath.toLowerCase();
+
+	if (execPath.includes('visual studio code')) {
+		return 'Visual Studio Code';
+	} else if (execPath.includes('vscode')) {
+		return 'Visual Studio Code';
+	} else if (execPath.includes('codium')) {
+		return 'VSCodium';
+	} else if (execPath.includes('cursor')) {
+		return 'Cursor';
+	} else if (execPath.includes('windsurf')) {
+		return 'Windsurf';
+	} else if (execPath.includes('trae')) {
+		return 'Trae';
+	} else if (execPath.includes('sublime')) {
+		return 'Sublime Text';
+	} else if (execPath.includes('atom')) {
+		return 'Atom';
+	} else if (execPath.includes('brackets')) {
+		return 'Brackets';
+	} else if (execPath.includes('theia')) {
+		return 'Theia';
+	} else if (execPath.includes('code')) {
+		return 'Visual Studio Code';
+	}
+
+	return null;
+}
+
 export function activate(context: vscode.ExtensionContext) {
 
 	// deploy
@@ -58,7 +88,7 @@ export function activate(context: vscode.ExtensionContext) {
 					const zipContent = await fs.promises.readFile(outputPath);
 					const blob = new Blob([zipContent], { type: 'application/zip' });
 
-					const redirectUrl = await deploy(blob);
+					const redirectUrl = await deploy(blob, workspacePath);
 					vscode.env.openExternal(vscode.Uri.parse(redirectUrl));
 				} catch (error) {
 					channel.appendLine(`${error}`);
@@ -150,7 +180,7 @@ async function calculateSHA256(blob: Blob): Promise<string> {
 	return hash.digest('base64');
 }
 
-async function deploy(code: Blob) {
+async function deploy(code: Blob, workspacePath: string) {
 	try {
 		if (!code) {
 			throw new Error("Code is required");
@@ -196,14 +226,31 @@ async function deploy(code: Blob) {
 		}
 
 		// Prepare upload for deployment
+		const editor = detectEditor();
+		const requestBody: any = {
+			upload_type: 'new_project',
+		};
+
+		if (editor || workspacePath) {
+			requestBody.metadata = {};
+			
+			if (editor) {
+				requestBody.metadata.uploaded_from = editor;
+				channel.appendLine(`[zeabur-vscode] Uploaded from ${editor}`);
+			}
+			
+			if (workspacePath) {
+				requestBody.metadata.workspace_path = workspacePath;
+				channel.appendLine(`[zeabur-vscode] Workspace path: ${workspacePath}`);
+			}
+		}
+
 		const prepareRes = await fetch(`https://api.zeabur.com/v2/upload/${upload_id}/prepare`, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify({
-				upload_type: 'new_project'
-			})
+			body: JSON.stringify(requestBody)
 		});
 
 		if (!prepareRes.ok) {
