@@ -77,7 +77,17 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
+	const uriHandler = vscode.window.registerUriHandler({
+		handleUri: (uri: vscode.Uri) => {
+			console.log('[zeabur-vscode] URI received:', uri.toString());
+			if (uri.path === '/deploy') {
+				vscode.commands.executeCommand('zeabur-vscode.deploy');
+			}
+		}
+	});
+
 	context.subscriptions.push(disposable);
+	context.subscriptions.push(uriHandler);
 
 	const zeaburDeployProvider = new ZeaburDeployProvider(context);
 	vscode.window.registerTreeDataProvider('zeabur-deploy', zeaburDeployProvider);
