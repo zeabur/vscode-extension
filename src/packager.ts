@@ -64,9 +64,23 @@ function relativeTo(base: string, target: string): string {
 	return base === '' ? target : target.slice(base.length + 1);
 }
 
+/**
+ * Mirrors git precedence: the deepest .gitignore that has an opinion wins,
+ * so a nested `!keep.log` can re-include a file excluded by a root `*.log`.
+ */
 function isIgnored(scopes: IgnoreScope[], target: string, isDirectory: boolean): boolean {
 	const probe = isDirectory ? `${target}/` : target;
-	return scopes.some(scope => scope.ig.ignores(relativeTo(scope.base, probe)));
+	for (let i = scopes.length - 1; i >= 0; i--) {
+		const scope = scopes[i];
+		const result = scope.ig.test(relativeTo(scope.base, probe));
+		if (result.ignored) {
+			return true;
+		}
+		if (result.unignored) {
+			return false;
+		}
+	}
+	return false;
 }
 
 function loadGitignore(dir: string): Ignore | null {

@@ -115,6 +115,24 @@ test('honors a nested .gitignore relative to its own directory', async () => {
 	]);
 });
 
+test('a nested .gitignore negation re-includes a file excluded by the root .gitignore', async () => {
+	const dir = makeProject({
+		'.gitignore': '*.log\n',
+		'root.log': '',
+		'packages/web/.gitignore': '!keep.log\n',
+		'packages/web/keep.log': '',
+		'packages/web/other.log': '',
+	});
+
+	const result = await collectFiles(dir);
+
+	assert.deepEqual(result.files.sort(), [
+		'.gitignore',
+		'packages/web/.gitignore',
+		'packages/web/keep.log',
+	]);
+});
+
 test('applies root .gitignore and built-in directory ignores', async () => {
 	const dir = makeProject({
 		'.gitignore': 'dist/\n',
