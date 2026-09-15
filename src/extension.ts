@@ -74,27 +74,31 @@ export function activate(context: vscode.ExtensionContext) {
 		const workspacePath = workspaceFolders[0].uri.fsPath;
 		const workspaceName = workspaceFolders[0].name;
 
-		const { files, sensitive } = await collectFiles(workspacePath);
-		logFileList(workspaceName, files, sensitive);
-
-		if (files.length === 0) {
-			vscode.window.showErrorMessage('No files to deploy: every file in the workspace is ignored or excluded.');
-			return;
-		}
-
-		const selected = await confirmFiles(workspaceName, files, sensitive, source);
-		if (!selected) {
-			channel.appendLine('[zeabur-vscode] Deployment cancelled by user');
-			return;
-		}
-
+		// Hold the lock for the whole flow, including scanning and the
+		// confirmation prompt, so a second trigger cannot replace an open
+		// confirmation. Every exit path below releases it in `finally`.
 		isDeploying = true;
 		zeaburDeployProvider.refresh();
 
-		const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'zeabur-deploy-'));
-		const outputPath = path.join(tmpDir, 'project.zip');
-
+		let tmpDir: string | undefined;
 		try {
+			const { files, sensitive } = await collectFiles(workspacePath);
+			logFileList(workspaceName, files, sensitive);
+
+			if (files.length === 0) {
+				vscode.window.showErrorMessage('No files to deploy: every file in the workspace is ignored or excluded.');
+				return;
+			}
+
+			const selected = await confirmFiles(workspaceName, files, sensitive, source);
+			if (!selected) {
+				channel.appendLine('[zeabur-vscode] Deployment cancelled by user');
+				return;
+			}
+
+			tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'zeabur-deploy-'));
+			const outputPath = path.join(tmpDir, 'project.zip');
+
 			await vscode.window.withProgress({
 				location: vscode.ProgressLocation.Notification,
 				title: 'Deploying project ...',
@@ -112,7 +116,9 @@ export function activate(context: vscode.ExtensionContext) {
 			vscode.window.showErrorMessage(`${err}`);
 		} finally {
 			// Clean up the temporary zip file
-			fs.rmSync(tmpDir, { recursive: true, force: true });
+			if (tmpDir) {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
 			isDeploying = false;
 			zeaburDeployProvider.refresh();
 		}
