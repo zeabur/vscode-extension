@@ -1,10 +1,9 @@
 import path from 'path';
+import os from 'os';
 import * as vscode from 'vscode';
 import fs from 'fs';
-import archiver from 'archiver';
 import crypto from 'crypto';
-import ignore from 'ignore';
-import { readdir } from 'fs/promises';
+import { collectFiles, createZip } from './packager';
 
 const channel = vscode.window.createOutputChannel('zeabur');
 
@@ -57,10 +56,13 @@ function detectEditor(): string | null {
 export function activate(context: vscode.ExtensionContext) {
 
 	// deploy
-	const disposable = vscode.commands.registerCommand('zeabur-vscode.deploy', async () => {
-		console.log('[zeabur-vscode] Deploy command triggered');
-		isDeploying = true;
-		zeaburDeployProvider.refresh();
+	const disposable = vscode.commands.registerCommand('zeabur-vscode.deploy', async (source?: DeploySource) => {
+		console.log('[zeabur-vscode] Deploy command triggered', source ?? 'ui');
+
+		if (isDeploying) {
+			vscode.window.showInformationMessage('A Zeabur deployment is already in progress.');
+			return;
+		}
 
 		const workspaceFolders = vscode.workspace.workspaceFolders;
 
@@ -70,38 +72,53 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 
 		const workspacePath = workspaceFolders[0].uri.fsPath;
-		const outputPath = path.join(workspacePath, '.zeabur/project.zip');
+		const workspaceName = workspaceFolders[0].name;
 
-		const outputDir = path.dirname(outputPath);
-		if (!fs.existsSync(outputDir)) {
-			fs.mkdirSync(outputDir, { recursive: true });
-		}
+		// Hold the lock for the whole flow, including scanning and the
+		// confirmation prompt, so a second trigger cannot replace an open
+		// confirmation. Every exit path below releases it in `finally`.
+		isDeploying = true;
+		zeaburDeployProvider.refresh();
 
+		let tmpDir: string | undefined;
 		try {
+			const { files, sensitive } = await collectFiles(workspacePath);
+			logFileList(workspaceName, files, sensitive);
+
+			if (files.length === 0) {
+				vscode.window.showErrorMessage('No files to deploy: every file in the workspace is ignored or excluded.');
+				return;
+			}
+
+			const selected = await confirmFiles(workspaceName, files, sensitive, source);
+			if (!selected) {
+				channel.appendLine('[zeabur-vscode] Deployment cancelled by user');
+				return;
+			}
+
+			tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'zeabur-deploy-'));
+			const outputPath = path.join(tmpDir, 'project.zip');
+
 			await vscode.window.withProgress({
 				location: vscode.ProgressLocation.Notification,
 				title: 'Deploying project ...',
 				cancellable: false
 			}, async () => {
-				try {
-					await compressDirectory(workspacePath, outputPath);
-					const zipContent = await fs.promises.readFile(outputPath);
-					const blob = new Blob([zipContent], { type: 'application/zip' });
+				await createZip(workspacePath, selected, outputPath);
+				const zipContent = await fs.promises.readFile(outputPath);
+				const blob = new Blob([zipContent], { type: 'application/zip' });
 
-					const redirectUrl = await deploy(blob, workspacePath);
-					vscode.env.openExternal(vscode.Uri.parse(redirectUrl));
-				} catch (error) {
-					channel.appendLine(`${error}`);
-					vscode.window.showErrorMessage(`${error}`);
-					throw error;
-				}
+				const redirectUrl = await deploy(blob, workspacePath);
+				vscode.env.openExternal(vscode.Uri.parse(redirectUrl));
 			});
-
 		} catch (err: any) {
+			channel.appendLine(`${err}`);
 			vscode.window.showErrorMessage(`${err}`);
 		} finally {
 			// Clean up the temporary zip file
-			fs.unlinkSync(outputPath);
+			if (tmpDir) {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
 			isDeploying = false;
 			zeaburDeployProvider.refresh();
 		}
@@ -111,7 +128,7 @@ export function activate(context: vscode.ExtensionContext) {
 		handleUri: (uri: vscode.Uri) => {
 			console.log('[zeabur-vscode] URI received:', uri.toString());
 			if (uri.path === '/deploy') {
-				vscode.commands.executeCommand('zeabur-vscode.deploy');
+				vscode.commands.executeCommand('zeabur-vscode.deploy', 'uri');
 			}
 		}
 	});
@@ -123,54 +140,54 @@ export function activate(context: vscode.ExtensionContext) {
 	vscode.window.registerTreeDataProvider('zeabur-deploy', zeaburDeployProvider);
 }
 
-async function compressDirectory(sourceDir: string, outPath: string): Promise<void> {
-	const output = fs.createWriteStream(outPath);
-	const archive = archiver('zip', { zlib: { level: 9 } });
+type DeploySource = 'uri';
 
-	return new Promise(async (resolve, reject) => {
-		output.on('close', () => resolve());
-		archive.on('error', err => reject(err));
-		archive.pipe(output);
-
-		// Load .gitignore patterns
-		const gitignorePath = path.join(sourceDir, '.gitignore');
-		const ig = ignore().add([
-			'node_modules/',
-			'.git/',
-			'.zeabur/',
-			'venv/',
-			'env/',
-			'.*/',
-		]);
-
-		if (fs.existsSync(gitignorePath)) {
-			const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
-			ig.add(gitignoreContent);
+function logFileList(workspaceName: string, files: string[], sensitive: string[]): void {
+	channel.appendLine(`[zeabur-vscode] Files to deploy from "${workspaceName}" (${files.length}):`);
+	for (const file of files) {
+		channel.appendLine(`  + ${file}`);
+	}
+	if (sensitive.length > 0) {
+		channel.appendLine(`[zeabur-vscode] Sensitive files excluded (${sensitive.length}):`);
+		for (const file of sensitive) {
+			channel.appendLine(`  - ${file}`);
 		}
+	}
+}
 
-		// Recursively add files manually
-		async function addFilesRecursively(dir: string, base = '') {
-			const entries = await readdir(dir, { withFileTypes: true });
+/**
+ * Shows the upload file list and asks the user to confirm. Every file is
+ * pre-selected; the user can deselect files before uploading. Returns the
+ * files to upload, or undefined when the user cancels.
+ */
+async function confirmFiles(
+	workspaceName: string,
+	files: string[],
+	sensitive: string[],
+	source?: DeploySource,
+): Promise<string[] | undefined> {
+	channel.show(true);
 
-			for (const entry of entries) {
-				const fullPath = path.join(dir, entry.name);
-				const relativePath = path.join(base, entry.name);
-				const normalizedPath = relativePath.replace(/\\/g, '/');
+	const title = source === 'uri'
+		? `An external link requested to deploy "${workspaceName}" to Zeabur`
+		: `Deploy "${workspaceName}" to Zeabur`;
 
-				if (ig.ignores(normalizedPath)) {continue;}
+	const excludedNote = sensitive.length > 0
+		? ` · ${sensitive.length} sensitive file(s) excluded (see "zeabur" output)`
+		: '';
 
-				if (entry.isDirectory()) {
-					await addFilesRecursively(fullPath, normalizedPath);
-				} else {
-					console.log('[zeabur-vscode] Adding file:', normalizedPath);
-					archive.file(fullPath, { name: normalizedPath });
-				}
-			}
-		}
-
-		await addFilesRecursively(sourceDir);
-		await archive.finalize();
+	const items: vscode.QuickPickItem[] = files.map(file => ({ label: file, picked: true }));
+	const picked = await vscode.window.showQuickPick(items, {
+		canPickMany: true,
+		ignoreFocusOut: true,
+		title,
+		placeHolder: `${files.length} file(s) will be uploaded${excludedNote}. Press Enter to deploy, Esc to cancel.`,
 	});
+
+	if (!picked || picked.length === 0) {
+		return undefined;
+	}
+	return picked.map(item => item.label);
 }
 
 async function calculateSHA256(blob: Blob): Promise<string> {

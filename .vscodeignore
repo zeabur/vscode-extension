@@ -1,11 +1,16 @@
 .vscode/**
 .vscode-test/**
+.zeabur/**
 out/**
 node_modules/**
 src/**
 .gitignore
+.npmrc
 .yarnrc
+**/.env*
 esbuild.js
+eslint.config.mjs
+pnpm-lock.yaml
 vsc-extension-quickstart.md
 **/tsconfig.json
 **/.eslintrc.json
