@@ -50,7 +50,8 @@
     "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:unit": "pnpm run compile-tests && node --test \"out/test/**/*.test.js\""
   },
   "devDependencies": {
     "@types/archiver": "^6.0.2",
